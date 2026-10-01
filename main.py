@@ -104,13 +104,19 @@ def delete_task(task_id: int, db: Session = Depends(get_db)):
 
 @app.delete("/api/tasks")
 def delete_tasks_by_status(status: Optional[str] = Query(None), db: Session = Depends(get_db)):
-    if status:
-        tasks = db.query(models.Task).filter(models.Task.status == status, models.Task.deleted_at.is_(None)).all()
-        for task in tasks:
-            task.deleted_at = datetime.datetime.now(timezone.utc)
-        db.commit()
-        return {"message": f"Tasks with status {status} deleted"}
-    return {"message": "No status provided"}
+    if not status:
+        raise HTTPException(status_code=400, detail="status is required")
+        
+    try:
+        schemas.TaskStatus(status)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid status value")
+        
+    tasks = db.query(models.Task).filter(models.Task.status == status, models.Task.deleted_at.is_(None)).all()
+    for task in tasks:
+        task.deleted_at = datetime.datetime.now(timezone.utc)
+    db.commit()
+    return {"message": f"Tasks with status {status} deleted"}
 
 @app.post("/api/tasks/{task_id}/restore", response_model=schemas.TaskResponse)
 def restore_task(task_id: int, db: Session = Depends(get_db)):
@@ -201,7 +207,7 @@ def delete_attachment(attachment_id: int, db: Session = Depends(get_db)):
 
 @app.post("/api/seed")
 def seed_data(db: Session = Depends(get_db)):
-    if db.query(models.Task).count() > 0:
+    if db.query(models.Task).filter(models.Task.deleted_at.is_(None)).count() > 0:
         return {"message": "Database already contains tasks. Seed skipped."}
     
     import datetime

@@ -3,7 +3,7 @@ const STATE = {
     tasks: [],
     trash: [],
     view: 'dashboard',
-    filterDay: null, // 0-6 (Mon-Sun)
+    filterDate: null, // YYYY-MM-DD
     search: '',
     settings: {
         showWeek: true,
@@ -13,7 +13,6 @@ const STATE = {
     deletedTaskBuffer: null
 };
 
-// Elements
 const viewDash = document.getElementById('view-dashboard');
 const viewCal = document.getElementById('view-calendar');
 const viewSet = document.getElementById('view-settings');
@@ -22,19 +21,34 @@ const toastMsg = document.getElementById('toast-msg');
 const toastUndo = document.getElementById('toast-undo');
 
 const P = {
-    HIGH: { label: 'High', bg: '#FFDAB3', text: '#574964' },
-    MEDIUM: { label: 'Medium', bg: '#EFE3E3', text: '#574964' },
-    LOW: { label: 'Low', bg: '#F4F0F2', text: '#9F8383' }
+    HIGH: { label: 'High', class: 'bg-gradient-to-r from-accent to-light text-primary shadow-sm' },
+    MEDIUM: { label: 'Medium', class: 'bg-light/25 text-primary' },
+    LOW: { label: 'Low', class: 'bg-muted/15 text-muted' }
 };
 const STATUS = {
-    BACKLOG: { label: 'Backlog', hex: '#C8AAAA' },
-    TODO: { label: 'To Do', hex: '#FFDAB3' },
-    IN_PROGRESS: { label: 'In Progress', hex: '#9F8383' },
-    DONE: { label: 'Done', hex: '#574964' },
-    CANCELED: { label: 'Canceled', hex: '#9F8383' }
+    BACKLOG: { label: 'Backlog', hex: '#C8AAAA', bg: 'rgba(200,170,170,0.5)' },
+    TODO: { label: 'To Do', hex: '#FFDAB3', bg: 'rgba(255,218,179,0.5)' },
+    IN_PROGRESS: { label: 'In Progress', hex: '#9F8383', bg: 'rgba(159,131,131,0.5)' },
+    DONE: { label: 'Done', hex: '#574964', bg: 'rgba(87,73,100,0.5)' },
+    CANCELED: { label: 'Canceled', hex: '#9F8383', bg: 'rgba(159,131,131,0.5)' }
 };
 const COLUMNS = ['BACKLOG', 'TODO', 'IN_PROGRESS', 'DONE'];
-const DOW = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+// Project Tints
+const TINT_PAIRS = [
+    { bg: 'rgba(255,218,179,0.3)', border: '#FFDAB3' },
+    { bg: 'rgba(200,170,170,0.25)', border: '#C8AAAA' },
+    { bg: 'rgba(159,131,131,0.2)', border: '#9F8383' },
+    { bg: 'rgba(87,73,100,0.1)', border: '#574964' }
+];
+
+function getProjectTint(projectName) {
+    const name = projectName || 'Inbox';
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+    const index = Math.abs(hash) % TINT_PAIRS.length;
+    return TINT_PAIRS[index];
+}
 
 let undoTimeout = null;
 let errorTimeout = null;
@@ -43,30 +57,44 @@ function showToast(msg, isUndo = false) {
     toastMsg.textContent = msg;
     toast.classList.remove('pointer-events-none');
     toast.classList.add('toast-active');
-    
     if (isUndo) {
-        toast.classList.remove('bg-red-600');
-        toast.classList.add('bg-primary');
+        toast.classList.remove('bg-red-500');
+        toast.classList.add('bg-gradient-to-r', 'from-primary', 'to-[#6B5878]');
         toastUndo.classList.remove('hidden');
     } else {
-        toast.classList.add('bg-red-600');
-        toast.classList.remove('bg-primary');
+        toast.classList.add('bg-red-500');
+        toast.classList.remove('bg-gradient-to-r', 'from-primary', 'to-[#6B5878]');
         toastUndo.classList.add('hidden');
     }
-
     clearTimeout(errorTimeout);
     errorTimeout = setTimeout(() => hideToast(), 4500);
 }
-
 function hideToast() {
     toast.classList.remove('toast-active');
     toast.classList.add('pointer-events-none');
-    STATE.deletedTaskBuffer = null;
 }
+toastUndo.onclick = async () => {
+    hideToast();
+    if(STATE.deletedTaskBuffer) {
+        try {
+            await api(`/tasks/${STATE.deletedTaskBuffer.id}/restore`, { method: 'POST' });
+            STATE.deletedTaskBuffer = null;
+            await fetchTasks();
+        } catch(e) {}
+    }
+};
+
+const ymd = (d) => {
+    const dt = new Date(d);
+    return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+};
 
 async function api(path, opts = {}) {
     try {
-        const res = await fetch(API_BASE + path, opts);
+        const res = await fetch(API_BASE + path, {
+            ...opts,
+            headers: { 'Content-Type': 'application/json', ...opts.headers }
+        });
         if (!res.ok) throw new Error('API Error');
         return await res.json();
     } catch (e) {
@@ -76,18 +104,15 @@ async function api(path, opts = {}) {
 }
 
 async function init() {
-    // Load Settings
     const saved = localStorage.getItem('kb-settings');
     if (saved) Object.assign(STATE.settings, JSON.parse(saved));
     updateSettingsUI();
 
-    // Setup Header
     const d = new Date();
     const hr = d.getHours();
     document.getElementById('header-title').textContent = hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
     document.getElementById('header-date').textContent = d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 
-    // Events
     document.querySelectorAll('.nav-btn').forEach(b => {
         b.addEventListener('click', () => setView(b.dataset.view));
     });
@@ -97,546 +122,579 @@ async function init() {
         renderDash();
     });
 
-    document.getElementById('bell-btn').addEventListener('click', e => {
-        const d = document.getElementById('notif-dropdown');
-        d.classList.toggle('hidden');
-        e.currentTarget.classList.toggle('bg-primary');
-        e.currentTarget.classList.toggle('text-white');
+    document.getElementById('clear-filter').onclick = () => {
+        STATE.filterDate = null;
+        renderWeek();
+        renderDash();
+    };
+
+    document.getElementById('bell-btn').onclick = (e) => {
+        e.stopPropagation();
+        document.getElementById('notif-dropdown').classList.toggle('hidden');
+    };
+    document.addEventListener('click', () => {
+        document.getElementById('notif-dropdown').classList.add('hidden');
     });
 
-    toastUndo.addEventListener('click', async () => {
-        if (!STATE.deletedTaskBuffer) return;
-        const t = STATE.deletedTaskBuffer;
-        hideToast();
-        try {
-            await api(`/tasks/${t.id}/restore`, { method: 'POST' });
-            await fetchTasks();
-            if(STATE.view === 'settings') fetchTrash();
-        } catch(e) {}
-    });
-
-    // Load Data
     await fetchTasks();
-}
-
-async function fetchTasks() {
-    STATE.tasks = await api('/tasks');
-    render();
+    setInterval(fetchTasks, 60000); // 1 min poll
 }
 
 function setView(v) {
     STATE.view = v;
     document.querySelectorAll('.nav-btn').forEach(b => {
-        const on = b.dataset.view === v;
-        b.className = `nav-btn flex items-center gap-3 h-10 px-3 border-0 rounded-xl text-sm font-semibold cursor-pointer text-left transition-colors ${on ? 'bg-primary text-white' : 'bg-transparent text-muted hover:bg-white'}`;
+        if(b.dataset.view === v) {
+            b.classList.remove('bg-transparent', 'text-muted', 'hover:bg-white/50');
+            b.classList.add('bg-gradient-to-br', 'from-primary', 'to-[#6B5878]', 'text-white', 'shadow-soft');
+        } else {
+            b.classList.add('bg-transparent', 'text-muted', 'hover:bg-white/50');
+            b.classList.remove('bg-gradient-to-br', 'from-primary', 'to-[#6B5878]', 'text-white', 'shadow-soft');
+        }
     });
-    viewDash.classList.toggle('hidden', v !== 'dashboard');
-    viewCal.classList.toggle('hidden', v !== 'calendar');
-    viewSet.classList.toggle('hidden', v !== 'settings');
-    if(v === 'dashboard') renderDash();
-    if(v === 'calendar') renderCalendar();
-    if(v === 'settings') fetchTrash();
+    [viewDash, viewCal, viewSet].forEach(el => el.classList.add('hidden'));
+    if (v === 'dashboard') { viewDash.classList.remove('hidden'); renderDash(); }
+    if (v === 'calendar') { viewCal.classList.remove('hidden'); renderCalendar(); }
+    if (v === 'settings') { viewSet.classList.remove('hidden'); fetchTrash(); }
 }
 
-function getDayIndex(dateStr) {
-    if (!dateStr) return null;
-    if (!dateStr.includes('T')) dateStr += 'T00:00:00';
-    let idx = new Date(dateStr).getDay() - 1;
-    return idx < 0 ? 6 : idx;
-}
-
-function render() {
-    renderDash();
-    renderCalendar();
+async function fetchTasks() {
+    STATE.tasks = await api('/tasks');
+    if (STATE.view === 'dashboard') renderDash();
+    if (STATE.view === 'calendar') renderCalendar();
 }
 
 function renderDash() {
     renderStats();
+    renderGroups();
     renderWeek();
     renderBoard();
 }
 
 function renderStats() {
-    const counts = { BACKLOG:0, TODO:0, IN_PROGRESS:0, DONE:0, CANCELED:0 };
-    STATE.tasks.forEach(t => { if(counts[t.status] !== undefined) counts[t.status]++; });
-    
-    const tot = STATE.tasks.length || 1;
-    const stats = [
-        { label: 'Completed', val: counts.DONE, bg: 'bg-primary', fg: 'text-white', dot: 'bg-accent', track: 'bg-white/35', fill: 'bg-accent', shadow: 'shadow-[0_10px_24px_rgba(87,73,100,0.12)]' },
-        { label: 'Pending', val: counts.TODO + counts.BACKLOG, bg: 'bg-accent', fg: 'text-primary', dot: 'bg-primary', track: 'bg-white/35', fill: 'bg-primary', shadow: 'shadow-[0_10px_24px_rgba(87,73,100,0.12)]' },
-        { label: 'Ongoing', val: counts.IN_PROGRESS, bg: 'bg-light', fg: 'text-[#3F3449]', dot: 'bg-primary', track: 'bg-white/35', fill: 'bg-primary', shadow: 'shadow-[0_10px_24px_rgba(87,73,100,0.12)]' },
-        { label: 'Canceled', val: counts.CANCELED, bg: 'bg-white', fg: 'text-primary', dot: 'bg-muted', track: 'bg-[#F1EBED]', fill: 'bg-muted', shadow: 'shadow-[0_1px_2px_rgba(87,73,100,0.04),0_10px_30px_rgba(87,73,100,0.06)]' },
-    ];
+    const cont = document.getElementById('stats-container');
+    const active = STATE.tasks.filter(t => t.status !== 'CANCELED');
+    const total = active.length;
+    const done = active.filter(t => t.status === 'DONE').length;
+    const pending = active.filter(t => t.status === 'TODO').length;
+    const inprog = active.filter(t => t.status === 'IN_PROGRESS').length;
+    const canceled = STATE.tasks.filter(t => t.status === 'CANCELED').length;
 
-    document.getElementById('stats-container').innerHTML = stats.map(s => `
-        <div class="p-5 rounded-[22px] flex flex-col gap-3.5 ${s.bg} ${s.fg} ${s.shadow}">
-            <div class="flex justify-between items-center"><div class="text-[13px] font-semibold">${s.label}</div><div class="w-2 h-2 rounded-full ${s.dot}"></div></div>
-            <div class="text-[36px] font-bold tracking-tight leading-none">${String(s.val).padStart(2, '0')}</div>
-            <div class="h-1 rounded-full ${s.track} overflow-hidden"><div class="h-full rounded-full ${s.fill}" style="width: ${Math.round(s.val/tot*100)}%"></div></div>
+    const pct = total === 0 ? 0 : Math.round((done / total) * 100);
+    const dashOff = 125.6 - (125.6 * pct / 100);
+
+    const ringHTML = `
+        <div class="col-span-2 bg-gradient-to-br from-[#574964] via-[#6B5878] to-[#9F8383] rounded-[32px] p-6 shadow-soft flex items-center justify-between text-white relative overflow-hidden">
+            <div class="absolute -bottom-10 -right-10 w-40 h-40 bg-accent/20 rounded-full blur-2xl"></div>
+            <div class="flex flex-col gap-2 relative z-10">
+                <div class="text-[28px] font-extrabold tracking-tight leading-none">${done} of ${total}</div>
+                <div class="text-[14px] font-medium text-white/80">tasks completed</div>
+                <button onclick="document.getElementById('board-container').scrollIntoView({behavior: 'smooth'})" class="mt-2 w-max px-5 py-2 rounded-full bg-white/90 text-primary text-[13px] font-bold shadow-sm hover:bg-white transition-colors">View Tasks</button>
+            </div>
+            <div class="relative w-20 h-20 flex items-center justify-center flex-none drop-shadow-[0_4px_12px_rgba(255,218,179,0.3)]">
+                <svg class="w-20 h-20 transform -rotate-90">
+                    <defs>
+                        <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" stop-color="#FFDAB3" />
+                            <stop offset="100%" stop-color="#C8AAAA" />
+                        </linearGradient>
+                    </defs>
+                    <circle cx="40" cy="40" r="20" stroke="rgba(255,255,255,0.15)" stroke-width="8" fill="none" />
+                    <circle cx="40" cy="40" r="20" stroke="url(#ringGrad)" stroke-width="8" fill="none" stroke-dasharray="125.6" stroke-dashoffset="${dashOff}" stroke-linecap="round" class="transition-all duration-1000 ease-out" />
+                </svg>
+                <div class="absolute inset-0 flex flex-col items-center justify-center">
+                    <span class="text-[15px] font-extrabold leading-none shadow-sm">${pct}%</span>
+                </div>
+            </div>
         </div>
-    `).join('');
+    `;
+
+    const makeCard = (label, count, grad, icon) => `
+        <div class="rounded-[32px] p-5 shadow-soft flex flex-col gap-2 justify-center transition-all duration-200 hover:-translate-y-0.5 hover:shadow-card border border-white/60 backdrop-blur-md" style="background: ${grad}">
+            <div class="w-8 h-8 rounded-full bg-white/50 flex items-center justify-center text-primary shadow-sm">${icon}</div>
+            <div class="flex flex-col gap-0.5 mt-1">
+                <div class="text-[28px] font-extrabold text-primary leading-none">${count}</div>
+                <div class="text-[12px] font-bold uppercase tracking-wider text-primary/70">${label}</div>
+            </div>
+        </div>
+    `;
+
+    const doneIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
+    const pendingIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>`;
+    const inprogIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>`;
+    const cancelIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`;
+
+    cont.innerHTML = ringHTML + 
+        makeCard('Completed', done, 'linear-gradient(135deg, rgba(255,218,179,0.5), rgba(255,255,255,0.7))', doneIcon) + 
+        makeCard('Pending', pending, 'linear-gradient(135deg, rgba(200,170,170,0.35), rgba(255,255,255,0.7))', pendingIcon) + 
+        makeCard('Ongoing', inprog, 'linear-gradient(135deg, rgba(159,131,131,0.2), rgba(255,255,255,0.7))', inprogIcon) + 
+        makeCard('Canceled', canceled, 'linear-gradient(135deg, rgba(87,73,100,0.08), rgba(255,255,255,0.7))', cancelIcon);
 }
 
-function renderWeek() {
-    const cont = document.getElementById('week-selector-container');
-    if (!STATE.settings.showWeek) { cont.classList.add('hidden'); return; }
-    cont.classList.remove('hidden');
-
-    const currDay = new Date();
-    const currDow = currDay.getDay() === 0 ? 6 : currDay.getDay() - 1;
-    const startOfWeek = new Date(currDay);
-    startOfWeek.setDate(currDay.getDate() - currDow);
-
-    const isAll = STATE.filterDay === null;
-    let html = `<button onclick="setFilterDay(null)" class="w-[52px] h-[64px] border-0 rounded-2xl font-bold text-[13px] transition-all shadow-[0_1px_2px_rgba(87,73,100,0.05)] ${isAll ? 'bg-primary text-white shadow-[0_8px_20px_rgba(87,73,100,0.25)]' : 'bg-white text-primary'}">All</button>`;
-
-    for(let i=0; i<7; i++) {
-        const d = new Date(startOfWeek);
-        d.setDate(d.getDate() + i);
-        
-        const hasTasks = STATE.tasks.some(t => getDayIndex(t.due_date) === i && !['BACKLOG','CANCELED'].includes(t.status));
-        const on = STATE.filterDay === i;
-        
-        html += `
-            <button onclick="setFilterDay(${i})" class="relative w-[52px] h-[64px] border-0 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all shadow-[0_1px_2px_rgba(87,73,100,0.05)] ${on ? 'bg-primary text-white shadow-[0_8px_20px_rgba(87,73,100,0.25)] transform -translate-y-0.5' : 'bg-white text-primary'}">
-                <span class="text-[12px] font-medium">${DOW[i]}</span>
-                <span class="text-[17px] font-bold">${d.getDate()}</span>
-                <span class="absolute bottom-[7px] w-1 h-1 rounded-full ${hasTasks ? (on ? 'bg-accent' : 'bg-light') : 'bg-transparent'}"></span>
-            </button>
-        `;
+function renderGroups() {
+    const cont = document.getElementById('groups-container');
+    const active = STATE.tasks.filter(t => t.status !== 'CANCELED');
+    if(active.length === 0) {
+        document.getElementById('groups-container-wrapper').classList.add('hidden');
+        return;
     }
-    document.getElementById('week-days').innerHTML = html;
+    document.getElementById('groups-container-wrapper').classList.remove('hidden');
 
-    const fd = document.getElementById('filter-dot');
-    const fl = document.getElementById('filter-label');
-    const clr = document.getElementById('clear-filter');
-    
-    if (isAll) {
-        fd.className = 'w-1.5 h-1.5 rounded-full bg-primary';
-        fl.textContent = 'Showing all of this week';
-        clr.classList.add('hidden');
-        document.getElementById('board-container').classList.remove('opacity-35', 'blur-[2px]');
-    } else {
-        fd.className = 'w-1.5 h-1.5 rounded-full bg-accent';
-        const d = new Date(startOfWeek); d.setDate(d.getDate() + STATE.filterDay);
-        const count = STATE.tasks.filter(t => !['BACKLOG','CANCELED'].includes(t.status) && getDayIndex(t.due_date) === STATE.filterDay).length;
-        fl.textContent = `${count} tasks on ${DOW[STATE.filterDay]}, ${d.toLocaleDateString('en-US',{month:'short',day:'numeric'})}`;
-        clr.classList.remove('hidden');
-        document.getElementById('board-container').classList.add('opacity-35', 'blur-[2px]');
-        setTimeout(() => document.getElementById('board-container').classList.remove('opacity-35', 'blur-[2px]'), 300);
-    }
-    clr.onclick = () => setFilterDay(null);
-}
+    const projs = {};
+    active.forEach(t => {
+        const p = t.project || 'Inbox';
+        if(!projs[p]) projs[p] = { total: 0, done: 0 };
+        projs[p].total++;
+        if(t.status === 'DONE') projs[p].done++;
+    });
 
-function setFilterDay(i) {
-    STATE.filterDay = i;
-    renderDash();
-}
+    const sorted = Object.keys(projs).map(k => ({ name: k, ...projs[k] })).sort((a,b) => b.total - a.total).slice(0, 4);
 
-function renderBoard() {
-    const board = document.getElementById('board-container');
-    const q = STATE.search;
-    
-    const visible = STATE.tasks.filter(t => t.title.toLowerCase().includes(q) || (t.project && t.project.toLowerCase().includes(q)));
-    
-    board.innerHTML = COLUMNS.map(stKey => {
-        const cfg = STATUS[stKey];
-        const isBacklog = stKey === 'BACKLOG';
-        const tasksInCol = visible.filter(t => t.status === stKey && (isBacklog || STATE.filterDay === null || getDayIndex(t.due_date) === STATE.filterDay));
-        
-        const pad = STATE.settings.compact ? 'p-[10px_12px]' : 'p-3.5';
-
-        const cards = tasksInCol.map(t => {
-            const isDone = t.status === 'DONE';
-            const prio = P[t.priority] || P.MEDIUM;
-            const dueStr = t.due_date ? new Date(t.due_date).toLocaleDateString('en-US', {month:'short',day:'numeric'}) : 'No date';
-            const dueLabel = (t.status === 'BACKLOG' || !t.due_date) ? dueStr : `${DOW[getDayIndex(t.due_date)]}, ${dueStr}`;
-
-            return `
-                <div class="bg-white rounded-2xl flex flex-col gap-2.5 shadow-[0_1px_2px_rgba(87,73,100,0.06),0_4px_12px_rgba(87,73,100,0.05)] cursor-grab ${pad}"
-                     draggable="true" ondragstart="dragStart(event, ${t.id})" onclick="openModal(${t.id})">
-                    <div class="flex items-center justify-between gap-2">
-                        <div class="text-[11px] font-medium text-muted">${t.project || 'Inbox'}</div>
-                        <span class="text-[11px] font-semibold px-2 py-0.5 rounded-full" style="background:${prio.bg}; color:${prio.text}">${prio.label}</span>
-                    </div>
-                    
-                    <div class="text-sm font-semibold leading-snug ${isDone ? 'text-muted line-through' : 'text-primary'} flex-1 group relative">
-                        <span class="title-disp block text-wrap">${escapeHtml(t.title)}</span>
-                        <input type="text" class="title-edit hidden w-full h-8 px-2 border-[1.5px] border-light rounded-lg outline-none font-inherit text-sm text-primary bg-[#FAF7F8]" 
-                               value="${escapeHtml(t.title)}" 
-                               onblur="saveInlineTitle(event, ${t.id})" 
-                               onkeydown="if(event.key==='Enter')this.blur();if(event.key==='Escape')cancelInline(event)"
-                               onclick="event.stopPropagation()">
-                    </div>
-
-                    ${t.status === 'IN_PROGRESS' ? `
-                    <div class="flex items-center gap-2">
-                        <div class="flex-1 h-1 rounded-full bg-[#F1EBED]"><div class="h-full rounded-full bg-primary" style="width: ${t.progress||0}%"></div></div>
-                        <span class="text-[11px] font-semibold">${t.progress||0}%</span>
-                    </div>` : ''}
-
-                    <div class="flex items-center gap-2">
-                        <button onclick="toggleDone(event, ${t.id})" class="flex-none w-5 h-5 rounded-full flex items-center justify-center cursor-pointer ${isDone ? 'border-0 bg-primary' : 'border-[1.6px] border-light bg-white'}">
-                            ${isDone ? '<span class="w-2 h-1 border-l-2 border-b-2 border-white transform -rotate-45 -translate-y-[1px] translate-x-[1px]"></span>' : ''}
-                        </button>
-                        <div class="text-xs text-muted flex-1 min-w-0">${dueLabel}</div>
-                        
-                        <button onclick="editInlineTitle(event)" class="w-7 h-7 rounded-lg text-muted bg-transparent hover:bg-[#F6F1F2] hover:text-primary flex items-center justify-center transition-colors">
-                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M2 12l.6-2.6L9.5 2.5l2 2-6.9 6.9z"></path></svg>
-                        </button>
-                        <button onclick="delTask(event, ${t.id})" class="w-7 h-7 rounded-lg text-muted bg-transparent hover:bg-[#FFF1E2] hover:text-primary flex items-center justify-center transition-colors">
-                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="2" y1="3.5" x2="12" y2="3.5"></line><path d="M3.5 3.5l.6 8.5h5.8l.6-8.5"></path><line x1="5.5" y1="1.8" x2="8.5" y2="1.8"></line></svg>
-                        </button>
-                    </div>
-                </div>
-            `;
-        }).join('');
-
-        const emptyHTML = tasksInCol.length === 0 ? `<div class="p-[22px_12px] border-[1.5px] border-dashed border-[#DCCACA] rounded-2xl text-xs text-muted text-center">${q ? 'No matches' : 'Drag tasks here'}</div>` : '';
-
+    cont.innerHTML = sorted.map(g => {
+        const p = g.total === 0 ? 0 : (g.done / g.total) * 100;
         return `
-            <div class="rounded-[22px] p-[14px_10px_10px] flex flex-col gap-2.5 min-h-[420px] bg-[#EFEBED] transition-colors" 
-                 ondragover="allowDrop(event)" ondragleave="dragLeave(event)" ondrop="drop(event, '${stKey}')">
-                <div class="flex items-center gap-2 px-1.5 pb-1">
-                    <span class="w-2 h-2 rounded-full" style="background: ${cfg.hex}"></span>
-                    <div class="text-xs font-bold tracking-wider uppercase">${cfg.label}</div>
-                    <span class="min-w-[22px] h-5 px-1.5 rounded-md bg-white text-[11px] font-bold flex items-center justify-center ml-1">${tasksInCol.length}</span>
+            <div class="flex flex-col gap-2">
+                <div class="flex items-center justify-between">
+                    <span class="text-[14px] font-bold text-primary truncate max-w-[120px]">${escapeHtml(g.name)}</span>
+                    <span class="text-[12px] font-extrabold text-primary/70">${p.toFixed(0)}%</span>
                 </div>
-                
-                ${cards}
-                ${emptyHTML}
-
-                <div class="add-container hidden bg-white rounded-2xl p-2.5 flex-col gap-2 shadow-[0_0_0_1.5px_#C8AAAA]">
-                    <input type="text" class="add-input border-0 outline-0 font-inherit text-sm text-primary bg-transparent px-1 py-1" placeholder="What needs to be done?" onkeydown="if(event.key==='Enter')addTask(event, '${stKey}');if(event.key==='Escape')hideAdd(event)">
-                    <div class="flex gap-1.5 justify-end">
-                        <button onclick="hideAdd(event)" class="h-[30px] px-3 rounded-full bg-[#F1EBED] text-primary text-xs font-semibold">Cancel</button>
-                        <button onclick="addTask(event, '${stKey}')" class="h-[30px] px-3.5 rounded-full bg-primary text-white text-xs font-semibold">Add task</button>
-                    </div>
+                <div class="h-2 w-full bg-primary/10 rounded-full overflow-hidden shadow-inner">
+                    <div class="h-full bg-gradient-to-r from-accent to-light rounded-full transition-all duration-500" style="width: ${p}%"></div>
                 </div>
-                
-                <button onclick="showAdd(event)" class="add-btn flex items-center gap-2 h-[38px] px-2.5 border-0 rounded-xl bg-transparent text-muted text-[13px] font-semibold cursor-pointer text-left hover:bg-white/70 hover:text-primary mt-auto">
-                    <span class="text-[17px] leading-none">+</span>Create task
-                </button>
             </div>
         `;
     }).join('');
 }
 
-// Inline Edit
-function editInlineTitle(e) {
-    e.stopPropagation();
-    const card = e.currentTarget.closest('.bg-white');
-    card.querySelector('.title-disp').classList.add('hidden');
-    const inp = card.querySelector('.title-edit');
-    inp.classList.remove('hidden');
-    inp.focus();
-}
-function cancelInline(e) {
-    const card = e.currentTarget.closest('.bg-white');
-    card.querySelector('.title-disp').classList.remove('hidden');
-    e.currentTarget.classList.add('hidden');
-}
-async function saveInlineTitle(e, id) {
-    const val = e.currentTarget.value.trim();
-    if (!val) { cancelInline(e); return; }
+function renderWeek() {
+    const cont = document.getElementById('week-selector-container');
+    const daysEl = document.getElementById('week-days');
+    const clearBtn = document.getElementById('clear-filter');
+    const filterLabel = document.getElementById('filter-label');
+    const filterDot = document.getElementById('filter-dot');
     
-    const task = STATE.tasks.find(t=>t.id===id);
-    if(task.title === val) { cancelInline(e); return; }
+    if(!STATE.settings.showWeek) {
+        cont.classList.add('hidden');
+        STATE.filterDate = null;
+        return;
+    }
+    cont.classList.remove('hidden');
+
+    if (STATE.filterDate !== null) {
+        clearBtn.classList.remove('hidden');
+        filterLabel.textContent = 'Filtered by date';
+        filterDot.style.background = '#FFDAB3';
+        filterDot.style.boxShadow = '0 0 12px rgba(255,218,179,0.8)';
+    } else {
+        clearBtn.classList.add('hidden');
+        filterLabel.textContent = 'Showing all tasks';
+        filterDot.style.background = '#574964';
+        filterDot.style.boxShadow = '0 0 8px rgba(87,73,100,0.5)';
+    }
+
+    const today = new Date();
+    let html = '';
     
-    task.title = val;
+    // -3 to +10 days
+    for(let i = -3; i <= 10; i++) {
+        const d = new Date(today);
+        d.setDate(today.getDate() + i);
+        const yStr = ymd(d);
+        const isToday = i === 0;
+        const isSelected = STATE.filterDate === yStr;
+        const hasTask = STATE.tasks.some(t => t.due_date && ymd(t.due_date) === yStr && t.status !== 'CANCELED');
+        
+        let bgClass = 'glass text-muted hover:bg-white/80';
+        if (isSelected) {
+            bgClass = 'bg-gradient-to-br from-accent to-light text-primary shadow-glow scale-105 border-0';
+        } else if (isToday) {
+            bgClass = 'glass ring-2 ring-light text-primary';
+        }
+        
+        const dd = d.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase();
+        const num = d.getDate();
+        
+        html += `
+            <div onclick="toggleDateFilter('${yStr}')" class="flex-none w-[64px] h-[76px] rounded-[24px] flex flex-col items-center justify-center gap-1 cursor-pointer transition-all duration-250 ${bgClass}">
+                <span class="text-[11px] font-extrabold tracking-widest ${isSelected ? '' : 'opacity-70'}">${dd}</span>
+                <span class="text-[20px] font-extrabold leading-none ${isSelected || isToday ? 'text-primary' : ''}">${num}</span>
+                <div class="w-1.5 h-1.5 rounded-full mt-0.5 ${hasTask ? (isSelected ? 'bg-primary' : 'bg-light') : 'opacity-0'}"></div>
+            </div>
+        `;
+    }
+    daysEl.innerHTML = html;
+}
+
+function toggleDateFilter(dStr) {
+    STATE.filterDate = (STATE.filterDate === dStr) ? null : dStr;
+    renderWeek();
     renderBoard();
-    try {
-        await api(`/tasks/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({title: val}) });
-    } catch(err) {
-        await fetchTasks();
-    }
 }
 
-// Inline Add
-function showAdd(e) {
-    const col = e.currentTarget.parentElement;
-    col.querySelector('.add-container').classList.replace('hidden', 'flex');
-    col.querySelector('.add-btn').classList.add('hidden');
-    col.querySelector('.add-input').focus();
-}
-function hideAdd(e) {
-    const col = e.currentTarget.closest('.rounded-\\[22px\\]');
-    col.querySelector('.add-container').classList.replace('flex', 'hidden');
-    col.querySelector('.add-btn').classList.remove('hidden');
-    col.querySelector('.add-input').value = '';
-}
-async function addTask(e, status) {
-    const col = e.currentTarget.closest('.rounded-\\[22px\\]');
-    const inp = col.querySelector('.add-input');
-    const title = inp.value.trim();
-    if (!title) return;
+function renderBoard() {
+    const cont = document.getElementById('board-container');
+    const pad = STATE.settings.compact ? 'p-4' : 'p-6';
     
-    hideAdd(e);
-    
-    const currDay = new Date();
-    const currDow = currDay.getDay() === 0 ? 6 : currDay.getDay() - 1;
-    const startOfWeek = new Date(currDay); startOfWeek.setDate(currDay.getDate() - currDow);
-    
-    let due_date = null;
-    if (status !== 'BACKLOG' && STATE.filterDay !== null) {
-        const d = new Date(startOfWeek);
-        d.setDate(d.getDate() + STATE.filterDay);
-        due_date = d.toISOString();
-    }
+    cont.innerHTML = COLUMNS.map(col => {
+        let tasks = STATE.tasks.filter(t => t.status === col);
+        
+        if (STATE.filterDate !== null && col !== 'BACKLOG') {
+            tasks = tasks.filter(t => t.due_date && ymd(t.due_date) === STATE.filterDate);
+        }
+        if (STATE.search) {
+            tasks = tasks.filter(t => t.title.toLowerCase().includes(STATE.search));
+        }
 
-    try {
-        const t = await api('/tasks', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ title, status, project: 'Inbox', due_date, progress: status==='IN_PROGRESS'?10:(status==='DONE'?100:0) })
-        });
-        STATE.tasks.push(t);
-        renderDash();
-    } catch(err) {}
+        const cards = tasks.map(t => {
+            const prio = P[t.priority] || P.MEDIUM;
+            const subDone = t.subtasks ? t.subtasks.filter(s => s.done).length : 0;
+            const subTotal = t.subtasks ? t.subtasks.length : 0;
+            const att = t.attachments ? t.attachments.length : 0;
+            const isDue = t.due_date && new Date(t.due_date) < new Date();
+            
+            const notifDot = (STATE.settings.notif && t.status !== 'DONE' && isDue) ? 
+                '<div class="absolute -top-1.5 -right-1.5 w-3.5 h-3.5 rounded-full bg-accent shadow-[0_0_8px_#FFDAB3] border-2 border-white"></div>' : '';
+
+            const tint = getProjectTint(t.project);
+
+            return `
+                <div class="group relative glass rounded-3xl flex flex-col gap-3 shadow-card cursor-grab ${pad} transition-all duration-250 hover:-translate-y-1 hover:shadow-[0_25px_60px_-20px_rgba(87,73,100,0.3)] overflow-hidden"
+                     draggable="true" ondragstart="dragStart(event, ${t.id})" onclick="openModal(${t.id})">
+                    <div class="absolute top-0 left-0 bottom-0 w-1" style="background: ${tint.border}"></div>
+                    ${notifDot}
+                    <div class="flex items-center justify-between gap-2 z-10 relative">
+                        <div class="text-[12px] font-bold text-primary truncate px-3 py-1 rounded-full shadow-sm" style="background: ${tint.bg}">${escapeHtml(t.project || 'Inbox')}</div>
+                        <div class="flex gap-1.5 items-center">
+                            <button onclick="editTitle(event, ${t.id})" class="opacity-0 group-hover:opacity-100 p-1.5 rounded-full hover:bg-primary/10 text-primary/70 transition-all"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg></button>
+                            <button onclick="delTask(event, ${t.id})" class="opacity-0 group-hover:opacity-100 p-1.5 rounded-full hover:bg-red-50 text-red-400 hover:text-red-600 transition-all"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
+                            <span class="text-[11px] font-extrabold px-3 py-1 rounded-full ${prio.class}">${prio.label}</span>
+                        </div>
+                    </div>
+                    
+                    <div class="text-[16px] font-extrabold leading-tight break-words pr-2 z-10 relative text-primary mt-1">${escapeHtml(t.title)}</div>
+                    
+                    <div class="flex items-center gap-3 mt-2 text-primary/70 z-10 relative">
+                        ${subTotal > 0 ? `
+                        <div class="flex items-center gap-1.5 text-[12px] font-bold">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
+                            ${subDone}/${subTotal}
+                        </div>` : ''}
+                        ${att > 0 ? `
+                        <div class="flex items-center gap-1.5 text-[12px] font-bold">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
+                            ${att}
+                        </div>` : ''}
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        return `
+            <div class="flex flex-col gap-5 min-w-[280px] rounded-[32px] p-2 transition-all duration-300" ondragover="allowDrop(event)" ondrop="drop(event, '${col}')" ondragleave="dragLeave(event)">
+                <div class="flex items-center justify-between px-2">
+                    <div class="flex items-center gap-3">
+                        <div class="w-3 h-3 rounded-full shadow-[0_0_12px_${STATUS[col].bg}]" style="background: ${STATUS[col].hex}"></div>
+                        <div class="text-[14px] font-extrabold uppercase tracking-widest text-primary">${STATUS[col].label}</div>
+                        <div class="text-[12px] font-extrabold text-primary glass px-2 py-0.5 rounded-full shadow-sm">${tasks.length}</div>
+                    </div>
+                </div>
+                
+                <button onclick="openCreateModal('${col}')" class="flex items-center gap-2 h-14 w-full border-2 border-dashed border-primary/20 rounded-[24px] bg-white/40 text-primary text-[14px] font-bold cursor-pointer hover:bg-white/60 hover:border-primary/30 transition-all justify-center shadow-sm">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                    Create task
+                </button>
+                
+                <div class="flex flex-col gap-4 min-h-[150px]">
+                    ${cards}
+                </div>
+            </div>
+        `;
+    }).join('');
 }
 
-async function toggleDone(e, id) {
-    e.stopPropagation();
-    const t = STATE.tasks.find(x=>x.id===id);
-    const newStatus = t.status === 'DONE' ? 'TODO' : 'DONE';
-    const oldStatus = t.status;
-    t.status = newStatus;
-    t.progress = newStatus === 'DONE' ? 100 : 0;
+function dragStart(ev, id) {
+    ev.dataTransfer.setData('id', id);
+    setTimeout(() => ev.target.classList.add('dragging'), 0);
+}
+function allowDrop(ev) { 
+    ev.preventDefault(); 
+    const colEl = ev.target.closest('.flex-col.gap-5');
+    if(colEl && !colEl.classList.contains('drag-over')) colEl.classList.add('drag-over');
+}
+function dragLeave(ev) {
+    const colEl = ev.target.closest('.flex-col.gap-5');
+    if(colEl) colEl.classList.remove('drag-over');
+}
+async function drop(ev, col) {
+    ev.preventDefault();
+    document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+    
+    const id = parseInt(ev.dataTransfer.getData('id'));
+    const task = STATE.tasks.find(t => t.id === id);
+    if (!task || task.status === col) return;
+    
+    document.querySelector('.dragging')?.classList.remove('dragging');
+    const old = task.status;
+    task.status = col;
     renderDash();
+    
     try {
-        await api(`/tasks/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({status: newStatus, progress: t.progress}) });
-    } catch(err) {
-        t.status = oldStatus; renderDash();
+        await api(`/tasks/${id}`, { method: 'PATCH', body: JSON.stringify({ status: col }) });
+    } catch(e) {
+        task.status = old;
+        renderDash();
     }
 }
 
-async function delTask(e, id) {
-    e.stopPropagation();
-    const idx = STATE.tasks.findIndex(t=>t.id===id);
+async function editTitle(ev, id) {
+    ev.stopPropagation();
+    const t = STATE.tasks.find(x => x.id === id);
+    const newVal = prompt('Edit title:', t.title);
+    if (!newVal || newVal.trim() === '') return;
+    
+    const old = t.title;
+    t.title = newVal.trim();
+    renderDash();
+    
+    try {
+        await api(`/tasks/${id}`, { method: 'PATCH', body: JSON.stringify({ title: t.title }) });
+    } catch(e) {
+        t.title = old;
+        renderDash();
+    }
+}
+
+async function delTask(ev, id) {
+    if(ev && ev.stopPropagation) ev.stopPropagation();
+    const idx = STATE.tasks.findIndex(x => x.id === id);
+    if(idx < 0) return;
     const t = STATE.tasks[idx];
+    
     STATE.deletedTaskBuffer = { ...t };
     STATE.tasks.splice(idx, 1);
     renderDash();
     
-    showToast(`"${t.title}" deleted`, true);
+    showToast(`"${escapeHtml(t.title)}" deleted`, true);
     
     try {
         await api(`/tasks/${id}`, { method: 'DELETE' });
         if(STATE.view === 'settings') fetchTrash();
-    } catch(err) {
-        await fetchTasks();
+    } catch(e) {
+        STATE.tasks.splice(idx, 0, t);
+        renderDash();
     }
 }
 
-// Drag & Drop
-let dragId = null;
-function dragStart(e, id) {
-    dragId = id;
-    e.dataTransfer.effectAllowed = 'move';
-    setTimeout(() => e.target.classList.add('dragging'), 0);
-}
-function allowDrop(e) {
-    e.preventDefault();
-    e.currentTarget.style.boxShadow = 'inset 0 0 0 2px #C8AAAA';
-    e.currentTarget.style.background = '#F3E7E7';
-}
-function dragLeave(e) {
-    if (!e.currentTarget.contains(e.relatedTarget)) {
-        e.currentTarget.style.boxShadow = 'none';
-        e.currentTarget.style.background = '#EFEBED';
-    }
-}
-async function drop(e, status) {
-    e.preventDefault();
-    e.currentTarget.style.boxShadow = 'none';
-    e.currentTarget.style.background = '#EFEBED';
-    if (!dragId) return;
-
-    const task = STATE.tasks.find(t=>t.id===dragId);
-    if (!task || task.status === status) { dragId=null; return; }
-
-    task.status = status;
-    task.progress = status === 'DONE' ? 100 : (status === 'IN_PROGRESS' ? (task.progress||10) : 0);
-    renderDash();
-
-    try {
-        await api(`/tasks/${dragId}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({status, progress: task.progress}) });
-    } catch(err) {
-        await fetchTasks();
-    }
-    dragId = null;
-}
-
-// Modal
-const modal = document.getElementById('task-modal');
-const backdrop = document.getElementById('modal-backdrop');
-let currentModalTaskId = null;
-
-function openModal(id) {
-    const t = STATE.tasks.find(x=>x.id===id);
-    if (!t) return;
-    currentModalTaskId = id;
-    
-    document.getElementById('modal-status-label').textContent = STATUS[t.status].label;
-    
-    const badge = document.getElementById('modal-priority-badge');
-    const p = P[t.priority] || P.MEDIUM;
-    badge.textContent = p.label + ' priority';
-    badge.style.background = p.bg;
-    badge.style.color = p.text;
-
-    const titleInp = document.getElementById('modal-title');
-    titleInp.value = t.title;
-    
-    titleInp.onblur = async () => {
-        const val = titleInp.value.trim();
-        if(val && val !== t.title) {
-            t.title = val; renderDash();
-            await api(`/tasks/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({title: val}) });
-        }
-    };
-
-    document.getElementById('modal-project').textContent = t.project || 'Inbox';
-    document.getElementById('modal-due').textContent = t.due_date ? new Date(t.due_date).toLocaleDateString('en-US', {weekday:'short', month:'short',day:'numeric'}) : 'No date';
-    document.getElementById('modal-desc').textContent = t.description || 'No description provided.';
-    
-    // Subtasks
-    const subC = document.getElementById('modal-subtasks-container');
-    const subL = document.getElementById('modal-subtasks-list');
-    if (t.subtasks && t.subtasks.length > 0) {
-        subC.classList.remove('hidden');
-        document.getElementById('modal-subtasks-count').textContent = `${t.subtasks.filter(s=>s.done).length} / ${t.subtasks.length}`;
-        
-        subL.innerHTML = t.subtasks.map(s => `
-            <button onclick="toggleSubtask(${id}, ${s.id}, ${!s.done})" class="flex items-center gap-3 py-2.5 border-b border-[#F3EEF0] bg-transparent cursor-pointer text-left focus:outline-none">
-                <span class="w-5 h-5 rounded-md flex-none flex items-center justify-center ${s.done ? 'bg-primary border-0' : 'bg-white border-[1.6px] border-light'}">
-                    ${s.done ? '<span class="w-2 h-1 border-l-2 border-b-2 border-white transform -rotate-45 -translate-y-[1px] translate-x-[1px]"></span>' : ''}
-                </span>
-                <span class="text-sm ${s.done ? 'text-muted line-through' : 'text-primary'}">${escapeHtml(s.title)}</span>
-            </button>
-        `).join('');
-    } else {
-        subC.classList.add('hidden');
-    }
-
-    // Attachments
-    const attC = document.getElementById('modal-attachments-container');
-    const attL = document.getElementById('modal-attachments-list');
-    if (t.attachments && t.attachments.length > 0) {
-        attC.classList.remove('hidden');
-        attL.innerHTML = t.attachments.map(a => `
-            <div class="flex items-center gap-2 h-[38px] px-3.5 rounded-xl bg-[#F8F4F5] text-[13px] font-medium">
-                <span class="w-2.5 h-3 rounded-sm border-[1.6px] border-muted"></span>
-                ${escapeHtml(a.name)}
-            </div>
-        `).join('');
-    } else {
-        attC.classList.add('hidden');
-    }
-
-    document.getElementById('modal-delete').onclick = () => { closeModal(); delTask({stopPropagation:()=>{}}, id); };
-    document.getElementById('modal-mark-done').onclick = async () => {
-        closeModal();
-        t.status = 'DONE'; t.progress = 100; renderDash();
-        await api(`/tasks/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({status: 'DONE', progress: 100}) });
-    };
-    document.getElementById('modal-mark-progress').onclick = async () => {
-        closeModal();
-        t.status = 'IN_PROGRESS'; t.progress = t.progress||10; renderDash();
-        await api(`/tasks/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({status: 'IN_PROGRESS', progress: t.progress}) });
-    };
-
-    backdrop.classList.remove('opacity-0', 'pointer-events-none');
-    modal.classList.remove('translate-x-[calc(100%+24px)]');
-}
-
+// Modal handling
 function closeModal() {
-    modal.classList.add('translate-x-[calc(100%+24px)]');
-    backdrop.classList.add('opacity-0', 'pointer-events-none');
-    currentModalTaskId = null;
+    document.getElementById('modal-backdrop').classList.add('opacity-0', 'pointer-events-none');
+    document.getElementById('task-modal').classList.add('translate-x-[calc(100%+32px)]');
+    setTimeout(() => {
+        document.getElementById('modal-view-content').classList.remove('hidden');
+        document.getElementById('modal-create-content').classList.add('hidden');
+        document.getElementById('modal-btn-create').classList.add('hidden');
+        document.getElementById('modal-mark-progress').classList.remove('hidden');
+        document.getElementById('modal-mark-done').classList.remove('hidden');
+    }, 400);
 }
 
 document.getElementById('modal-close').onclick = closeModal;
-backdrop.onclick = closeModal;
+document.getElementById('modal-backdrop').onclick = closeModal;
 
-async function toggleSubtask(taskId, subId, done) {
-    const t = STATE.tasks.find(x=>x.id===taskId);
-    const sub = t.subtasks.find(s=>s.id===subId);
-    sub.done = done;
-    openModal(taskId); // re-render modal
-    try {
-        await api(`/subtasks/${subId}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({done}) });
-    } catch(e) {
-        sub.done = !done; openModal(taskId);
-    }
+function openCreateModal(defaultStatus = 'TODO') {
+    document.getElementById('modal-view-content').classList.add('hidden');
+    document.getElementById('modal-create-content').classList.remove('hidden');
+    
+    document.getElementById('modal-btn-create').classList.remove('hidden');
+    document.getElementById('modal-mark-progress').classList.add('hidden');
+    document.getElementById('modal-mark-done').classList.add('hidden');
+    document.getElementById('modal-delete').classList.add('hidden');
+    document.getElementById('modal-status-label').textContent = 'Create Task';
+
+    document.getElementById('create-title').value = '';
+    document.getElementById('create-status').value = defaultStatus;
+    document.getElementById('create-priority').value = 'MEDIUM';
+    document.getElementById('create-project').value = '';
+    document.getElementById('create-due').value = ymd(new Date());
+    document.getElementById('create-desc').value = '';
+
+    document.getElementById('modal-backdrop').classList.remove('opacity-0', 'pointer-events-none');
+    document.getElementById('task-modal').classList.remove('translate-x-[calc(100%+32px)]');
 }
+
+async function submitCreate() {
+    const title = document.getElementById('create-title').value.trim();
+    if (!title) {
+        alert('Title is required');
+        return;
+    }
+    const data = {
+        title,
+        status: document.getElementById('create-status').value,
+        priority: document.getElementById('create-priority').value,
+        project: document.getElementById('create-project').value.trim() || 'Inbox',
+        due_date: document.getElementById('create-due').value || null,
+        description: document.getElementById('create-desc').value.trim() || null
+    };
+
+    closeModal();
+    try {
+        await api('/tasks', { method: 'POST', body: JSON.stringify(data) });
+        await fetchTasks();
+    } catch(e) {}
+}
+
+let activeTaskId = null;
+
+function openModal(id) {
+    const t = STATE.tasks.find(x => x.id === id);
+    if (!t) return;
+    activeTaskId = id;
+
+    document.getElementById('modal-view-content').classList.remove('hidden');
+    document.getElementById('modal-create-content').classList.add('hidden');
+    document.getElementById('modal-btn-create').classList.add('hidden');
+    document.getElementById('modal-mark-progress').classList.remove('hidden');
+    document.getElementById('modal-mark-done').classList.remove('hidden');
+    document.getElementById('modal-delete').classList.remove('hidden');
+
+    document.getElementById('modal-status-label').textContent = STATUS[t.status].label;
+    document.getElementById('modal-title').value = t.title;
+    document.getElementById('modal-project').textContent = escapeHtml(t.project || 'Inbox');
+    
+    const prio = P[t.priority] || P.MEDIUM;
+    const badge = document.getElementById('modal-priority-badge');
+    badge.textContent = prio.label;
+    badge.className = `text-[13px] font-bold px-3 py-1.5 rounded-full shadow-sm border border-white/50 ${prio.class}`;
+
+    document.getElementById('modal-due').textContent = t.due_date ? new Date(t.due_date).toLocaleDateString() : 'No date';
+    document.getElementById('modal-desc').textContent = t.description || 'No description provided.';
+    
+    const sDone = t.subtasks ? t.subtasks.filter(x => x.done).length : 0;
+    const sTotal = t.subtasks ? t.subtasks.length : 0;
+    document.getElementById('modal-subtasks-count').textContent = `${sDone}/${sTotal}`;
+    
+    document.getElementById('modal-subtasks-list').innerHTML = (t.subtasks || []).map(s => `
+        <div class="flex items-center gap-3 py-2.5 border-b border-primary/10 last:border-0">
+            <div class="w-5 h-5 rounded-full border-2 flex items-center justify-center ${s.done ? 'bg-accent border-accent text-primary shadow-sm' : 'border-muted'}">
+                ${s.done ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>' : ''}
+            </div>
+            <span class="text-[14px] font-bold ${s.done ? 'text-primary/50 line-through' : 'text-primary'}">${escapeHtml(s.title)}</span>
+        </div>
+    `).join('') || '<div class="text-[13px] text-muted italic font-medium">No subtasks</div>';
+
+    document.getElementById('modal-attachments-list').innerHTML = (t.attachments || []).map(a => `
+        <div class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white shadow-sm border border-white/50">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-muted"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
+            <span class="text-[13px] font-extrabold text-primary">${escapeHtml(a.name)}</span>
+        </div>
+    `).join('') || '<div class="text-[13px] text-muted italic font-medium">No attachments</div>';
+
+    document.getElementById('modal-backdrop').classList.remove('opacity-0', 'pointer-events-none');
+    document.getElementById('task-modal').classList.remove('translate-x-[calc(100%+32px)]');
+}
+
+document.getElementById('modal-title').onchange = async (e) => {
+    if(!activeTaskId) return;
+    const newVal = e.target.value.trim();
+    if(!newVal) return;
+    const t = STATE.tasks.find(x => x.id === activeTaskId);
+    t.title = newVal;
+    renderDash();
+    try { await api(`/tasks/${activeTaskId}`, { method: 'PATCH', body: JSON.stringify({ title: newVal }) }); } catch(e) {}
+};
+
+document.getElementById('modal-delete').onclick = async () => {
+    if(!activeTaskId) return;
+    closeModal();
+    await delTask({stopPropagation:()=>{}}, activeTaskId);
+};
+
+document.getElementById('modal-mark-progress').onclick = async () => {
+    if(!activeTaskId) return;
+    closeModal();
+    const t = STATE.tasks.find(x => x.id === activeTaskId);
+    t.status = 'IN_PROGRESS';
+    renderDash();
+    try { await api(`/tasks/${activeTaskId}`, { method: 'PATCH', body: JSON.stringify({ status: 'IN_PROGRESS' }) }); } catch(e) {}
+};
+
+document.getElementById('modal-mark-done').onclick = async () => {
+    if(!activeTaskId) return;
+    closeModal();
+    const t = STATE.tasks.find(x => x.id === activeTaskId);
+    t.status = 'DONE';
+    renderDash();
+    try { await api(`/tasks/${activeTaskId}`, { method: 'PATCH', body: JSON.stringify({ status: 'DONE' }) }); } catch(e) {}
+};
 
 // Calendar
 function renderCalendar() {
-    const currDay = new Date();
-    const y = currDay.getFullYear();
-    const m = currDay.getMonth();
+    const grid = document.getElementById('calendar-grid');
+    grid.innerHTML = '';
     
-    document.getElementById('calendar-month').textContent = currDay.toLocaleDateString('en-US', {month: 'long', year: 'numeric'});
+    const today = new Date();
+    document.getElementById('calendar-month').textContent = today.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
     
-    const firstDay = new Date(y, m, 1);
-    let startDow = firstDay.getDay() - 1; if(startDow < 0) startDow = 6;
+    // Add headers
+    const DOW = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+    DOW.forEach(d => {
+        grid.innerHTML += `<div class="text-center text-[13px] font-extrabold tracking-widest uppercase text-muted py-2">${d}</div>`;
+    });
+
+    const yr = today.getFullYear();
+    const mo = today.getMonth();
+    const firstDay = new Date(yr, mo, 1);
+    let startIdx = firstDay.getDay() - 1;
+    if(startIdx < 0) startIdx = 6;
     
-    const calGrid = document.getElementById('calendar-grid');
-    let html = DOW.map(d => `<div class="text-[11px] font-semibold tracking-wider uppercase text-muted px-2 pb-1">${d}</div>`).join('');
-    const ymd = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    const daysInMo = new Date(yr, mo + 1, 0).getDate();
     
-    for(let i=0; i<35; i++) {
-        const d = new Date(y, m, i - startDow + 1);
-        const inMonth = d.getMonth() === m;
-        const isToday = d.toDateString() === currDay.toDateString();
-        const dateISO = ymd(d);
+    for(let i=0; i<startIdx; i++) {
+        grid.innerHTML += `<div class="h-28 rounded-3xl bg-white/30"></div>`;
+    }
+    
+    for(let d=1; d<=daysInMo; d++) {
+        const cur = new Date(yr, mo, d);
+        const yStr = ymd(cur);
+        const dayTasks = STATE.tasks.filter(t => t.due_date && ymd(t.due_date) === yStr && t.status !== 'CANCELED');
         
-        const dayTasks = STATE.tasks.filter(t => t.due_date && t.due_date.startsWith(dateISO) && !['BACKLOG','CANCELED'].includes(t.status));
+        const isToday = yStr === ymd(today);
+        const badge = isToday ? `<div class="w-7 h-7 rounded-full bg-primary text-white text-[12px] font-bold flex items-center justify-center shadow-sm">${d}</div>` : `<div class="text-[14px] font-extrabold text-muted">${d}</div>`;
         
-        const bg = isToday ? 'bg-primary text-white shadow-[0_8px_20px_rgba(87,73,100,0.25)]' : (inMonth ? 'bg-[#FAF7F8] text-primary' : 'bg-transparent text-light');
+        const taskChips = dayTasks.slice(0,2).map(t => `<span class="text-[11px] font-extrabold px-2 py-0.5 rounded-md bg-white/60 text-primary whitespace-nowrap overflow-hidden text-ellipsis w-full block text-center shadow-sm border border-white/50">${escapeHtml(t.title)}</span>`).join('');
+        const more = dayTasks.length > 2 ? `<div class="text-[11px] font-bold text-muted text-center">+${dayTasks.length - 2} more</div>` : '';
         
-        const taskChips = dayTasks.slice(0,2).map(t => `<span class="text-[11px] font-medium px-1.5 py-0.5 rounded-md bg-accent text-primary whitespace-nowrap overflow-hidden text-ellipsis">${escapeHtml(t.title)}</span>`).join('');
-        const more = dayTasks.length > 2 ? `<span class="text-[11px] text-muted">+${dayTasks.length-2} more</span>` : '';
-        
-        html += `
-            <button onclick="navToDay('${dateISO}')" class="min-h-[92px] border-0 rounded-2xl p-2 flex flex-col gap-1 items-stretch text-left cursor-pointer transition-transform hover:-translate-y-0.5 ${bg}">
-                <span class="text-[13px] font-bold">${d.getDate()}</span>
-                ${taskChips}
-                ${more}
-            </button>
+        grid.innerHTML += `
+            <div class="h-28 rounded-3xl glass shadow-sm p-3 flex flex-col gap-1 overflow-hidden transition-all hover:scale-105 hover:shadow-soft">
+                ${badge}
+                <div class="flex flex-col gap-1 mt-1">${taskChips}${more}</div>
+            </div>
         `;
     }
-    calGrid.innerHTML = html;
-}
-
-function navToDay(dateStr) {
-    setView('dashboard');
-    setFilterDay(getDayIndex(dateStr));
 }
 
 // Settings
-function updateSettingsUI() {
-    ['showWeek','compact','notif'].forEach(k => {
-        const btn = document.getElementById('toggle-' + k);
-        const knob = btn.firstElementChild;
-        if (STATE.settings[k]) {
-            btn.classList.replace('bg-[#E4DADC]', 'bg-primary');
-            knob.classList.add('translate-x-5');
-        } else {
-            btn.classList.replace('bg-primary', 'bg-[#E4DADC]');
-            knob.classList.remove('translate-x-5');
-        }
-    });
-}
-
-function toggleSetting(k) {
-    STATE.settings[k] = !STATE.settings[k];
+function toggleSetting(key) {
+    STATE.settings[key] = !STATE.settings[key];
     localStorage.setItem('kb-settings', JSON.stringify(STATE.settings));
     updateSettingsUI();
     if(STATE.view === 'dashboard') renderDash();
 }
-
+function updateSettingsUI() {
+    ['showWeek','compact','notif'].forEach(k => {
+        const btn = document.getElementById('toggle-' + k);
+        const circle = btn.querySelector('span');
+        if(STATE.settings[k]) {
+            btn.classList.add('bg-gradient-to-r', 'from-accent', 'to-light', 'shadow-glow');
+            btn.classList.remove('bg-primary/20');
+            circle.classList.add('translate-x-5');
+        } else {
+            btn.classList.remove('bg-gradient-to-r', 'from-accent', 'to-light', 'shadow-glow');
+            btn.classList.add('bg-primary/20');
+            circle.classList.remove('translate-x-5');
+        }
+    });
+}
 ['showWeek','compact','notif'].forEach(k => {
     document.getElementById('toggle-' + k).onclick = () => toggleSetting(k);
 });
@@ -656,6 +714,8 @@ document.getElementById('btn-reset-data').onclick = async () => {
         await api('/tasks?status=TODO', { method: 'DELETE' });
         await api('/tasks?status=IN_PROGRESS', { method: 'DELETE' });
         await api('/tasks?status=DONE', { method: 'DELETE' });
+        await api('/tasks?status=CANCELED', { method: 'DELETE' });
+        await api('/trash', { method: 'DELETE' });
         await api('/seed', { method: 'POST' });
         await fetchTasks();
         if(STATE.view === 'settings') fetchTrash();
@@ -670,24 +730,24 @@ async function fetchTrash() {
 function renderTrash() {
     const list = document.getElementById('trash-list');
     if (!STATE.trash || STATE.trash.length === 0) {
-        list.innerHTML = '<div class="py-4 text-center text-[13px] text-muted">Trash is empty</div>';
+        list.innerHTML = "<div class=\"py-8 text-center text-[15px] font-bold text-muted\">Trash is empty</div>";
         return;
     }
     list.innerHTML = STATE.trash.map(t => {
         const delDate = new Date(t.deleted_at).toLocaleDateString('en-US', {month:'short', day:'numeric'});
         return `
-            <div class="flex items-center justify-between gap-3 py-2.5 border-b border-[#F3EEF0] last:border-0">
-                <div class="flex-1 min-w-0">
-                    <div class="text-[13px] font-semibold text-primary truncate">${escapeHtml(t.title)}</div>
-                    <div class="text-[11px] text-muted">${t.project || 'Inbox'} • Deleted ${delDate}</div>
+            <div class="flex items-center justify-between gap-4 py-4 border-b border-primary/10 last:border-0">
+                <div class="flex-1 min-w-0 flex flex-col gap-1">
+                    <div class="text-[15px] font-extrabold text-primary truncate">${escapeHtml(t.title)}</div>
+                    <div class="text-[13px] font-medium text-muted">${escapeHtml(t.project || 'Inbox')} • Deleted ${delDate}</div>
                 </div>
                 <div class="flex items-center gap-2">
-                    <button onclick="restoreTrashTask(${t.id})" class="h-7 px-3 rounded-full bg-[#EFE3E3] text-primary text-[12px] font-semibold hover:bg-[#FFDAB3]">Restore</button>
+                    <button onclick="restoreTrashTask(${t.id})" class="h-9 px-5 rounded-full bg-primary/10 text-primary text-[13px] font-bold hover:bg-primary/20 transition-colors">Restore</button>
                     <div class="relative">
-                        <button onclick="showDeleteConfirm(${t.id})" id="btn-del-${t.id}" class="h-7 px-3 rounded-full bg-[#F1EBED] text-red-600 text-[12px] font-semibold hover:bg-gray-200">Delete</button>
-                        <div id="conf-del-${t.id}" class="hidden absolute right-0 top-0 items-center gap-1 bg-white p-1 rounded-full shadow-md z-10 border border-gray-100 whitespace-nowrap">
-                            <button onclick="permDelete(${t.id})" class="h-6 px-2.5 rounded-full bg-red-600 text-white text-[11px] font-bold hover:bg-red-700">Delete</button>
-                            <button onclick="hideDeleteConfirm(${t.id})" class="h-6 px-2.5 rounded-full bg-gray-200 text-primary text-[11px] font-bold">Cancel</button>
+                        <button onclick="showDeleteConfirm(${t.id})" id="btn-del-${t.id}" class="h-9 px-5 rounded-full bg-red-50 text-red-500 text-[13px] font-bold hover:bg-red-100 transition-colors">Delete</button>
+                        <div id="conf-del-${t.id}" class="hidden absolute right-0 top-0 items-center gap-1 bg-white/95 backdrop-blur-xl p-1.5 rounded-full shadow-soft z-10 border border-primary/10 whitespace-nowrap">
+                            <button onclick="permDelete(${t.id})" class="h-8 px-4 rounded-full bg-red-500 text-white text-[12px] font-bold hover:bg-red-600 transition-colors shadow-sm">Delete forever</button>
+                            <button onclick="hideDeleteConfirm(${t.id})" class="h-8 px-4 rounded-full bg-primary/10 text-primary text-[12px] font-bold hover:bg-primary/20 transition-colors">Cancel</button>
                         </div>
                     </div>
                 </div>
@@ -695,6 +755,7 @@ function renderTrash() {
         `;
     }).join('');
 }
+
 function showDeleteConfirm(id) {
     document.getElementById(`btn-del-${id}`).classList.add('hidden');
     document.getElementById(`conf-del-${id}`).classList.replace('hidden', 'flex');
@@ -736,7 +797,7 @@ document.getElementById('btn-empty-trash-yes').onclick = async () => {
 };
 
 function escapeHtml(s) {
-    return (s || '').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return String(s ?? '').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 init();

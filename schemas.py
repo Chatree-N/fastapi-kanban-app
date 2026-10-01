@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List
 from datetime import datetime
 from enum import Enum
@@ -43,34 +43,34 @@ class AttachmentResponse(AttachmentBase):
     model_config = ConfigDict(from_attributes=True)
 
 class TaskBase(BaseModel):
-    title: str
+    title: str = Field(min_length=1)
     description: Optional[str] = None
     status: Optional[TaskStatus] = TaskStatus.TODO
     priority: Optional[TaskPriority] = TaskPriority.MEDIUM
     due_date: Optional[datetime] = None
     project: Optional[str] = "Inbox"
-    progress: Optional[int] = 0
+    progress: Optional[int] = Field(default=0, ge=0, le=100)
 
 class TaskCreate(TaskBase):
     pass
 
 class TaskUpdate(BaseModel):
-    title: str
+    title: str = Field(min_length=1)
     description: Optional[str] = None
     status: TaskStatus
     priority: TaskPriority
     due_date: Optional[datetime] = None
     project: Optional[str] = "Inbox"
-    progress: Optional[int] = 0
+    progress: Optional[int] = Field(default=0, ge=0, le=100)
 
 class TaskPatch(BaseModel):
-    title: Optional[str] = None
+    title: Optional[str] = Field(default=None, min_length=1)
     description: Optional[str] = None
     status: Optional[TaskStatus] = None
     priority: Optional[TaskPriority] = None
     due_date: Optional[datetime] = None
     project: Optional[str] = None
-    progress: Optional[int] = None
+    progress: Optional[int] = Field(default=None, ge=0, le=100)
 
 class TaskResponse(TaskBase):
     id: int
