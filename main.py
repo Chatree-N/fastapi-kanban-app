@@ -153,15 +153,29 @@ def seed_data(db: Session = Depends(get_db)):
     
     import datetime
     now = datetime.datetime.now(datetime.timezone.utc)
-    # Sample tasks from the design
-    sample_tasks = [
-        models.Task(title="Design Dashboard", status="DONE", priority="HIGH", project="UI/UX", progress=100),
-        models.Task(title="Implement API", status="IN_PROGRESS", priority="HIGH", project="Backend", progress=40),
-        models.Task(title="Write tests", status="TODO", priority="MEDIUM", project="QA", due_date=now),
-        models.Task(title="Fix CSS bugs", status="BACKLOG", priority="LOW", project="Frontend")
-    ]
-    for task in sample_tasks:
-        db.add(task)
+    day2 = now + datetime.timedelta(days=2)
+    day_minus_1 = now - datetime.timedelta(days=1)
+    
+    t1 = models.Task(title="Design Dashboard", status="DONE", priority="HIGH", project="UI/UX", progress=100, due_date=day_minus_1)
+    t2 = models.Task(title="Implement API", status="IN_PROGRESS", priority="HIGH", project="Backend", progress=40, due_date=now)
+    t3 = models.Task(title="Write tests", status="TODO", priority="MEDIUM", project="QA", due_date=day2)
+    t4 = models.Task(title="Fix CSS bugs", status="BACKLOG", priority="LOW", project="Frontend")
+    t5 = models.Task(title="Legacy refactor", status="CANCELED", priority="LOW", project="Tech Debt", due_date=now)
+    
+    db.add_all([t1, t2, t3, t4, t5])
+    db.commit()
+
+    # Subtasks
+    s1 = models.Subtask(title="Audit current screens", done=True, task_id=t1.id)
+    s2 = models.Subtask(title="Sketch new flow", done=False, task_id=t1.id)
+    s3 = models.Subtask(title="Hi-fi mockups", done=False, task_id=t1.id)
+    db.add_all([s1, s2, s3])
+    
+    # Attachments
+    a1 = models.Attachment(name="Brief.pdf", task_id=t1.id)
+    a2 = models.Attachment(name="Research notes", task_id=t1.id)
+    db.add_all([a1, a2])
+    
     db.commit()
     return {"message": "Sample data seeded"}
 

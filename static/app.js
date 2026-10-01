@@ -29,8 +29,10 @@ const STATUS = {
     BACKLOG: { label: 'Backlog', hex: '#C8AAAA' },
     TODO: { label: 'To Do', hex: '#FFDAB3' },
     IN_PROGRESS: { label: 'In Progress', hex: '#9F8383' },
-    DONE: { label: 'Done', hex: '#574964' }
+    DONE: { label: 'Done', hex: '#574964' },
+    CANCELED: { label: 'Canceled', hex: '#9F8383' }
 };
+const COLUMNS = ['BACKLOG', 'TODO', 'IN_PROGRESS', 'DONE'];
 const DOW = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 
 let undoTimeout = null;
@@ -103,8 +105,8 @@ async function init() {
 
     toastUndo.addEventListener('click', async () => {
         if (!STATE.deletedTaskBuffer) return;
-        hideToast();
         const t = STATE.deletedTaskBuffer;
+        hideToast();
         try {
             const { id, created_at, subtasks, attachments, ...payload } = t;
             await api('/tasks', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
@@ -135,6 +137,7 @@ function setView(v) {
 
 function getDayIndex(dateStr) {
     if (!dateStr) return null;
+    if (!dateStr.includes('T')) dateStr += 'T00:00:00';
     let idx = new Date(dateStr).getDay() - 1;
     return idx < 0 ? 6 : idx;
 }
@@ -233,7 +236,7 @@ function renderBoard() {
     
     const visible = STATE.tasks.filter(t => t.title.toLowerCase().includes(q) || (t.project && t.project.toLowerCase().includes(q)));
     
-    board.innerHTML = Object.keys(STATUS).map(stKey => {
+    board.innerHTML = COLUMNS.map(stKey => {
         const cfg = STATUS[stKey];
         const isBacklog = stKey === 'BACKLOG';
         const tasksInCol = visible.filter(t => t.status === stKey && (isBacklog || STATE.filterDay === null || getDayIndex(t.due_date) === STATE.filterDay));
@@ -577,12 +580,13 @@ function renderCalendar() {
     
     const calGrid = document.getElementById('calendar-grid');
     let html = DOW.map(d => `<div class="text-[11px] font-semibold tracking-wider uppercase text-muted px-2 pb-1">${d}</div>`).join('');
+    const ymd = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
     
     for(let i=0; i<35; i++) {
         const d = new Date(y, m, i - startDow + 1);
         const inMonth = d.getMonth() === m;
         const isToday = d.toDateString() === currDay.toDateString();
-        const dateISO = d.toISOString().split('T')[0];
+        const dateISO = ymd(d);
         
         const dayTasks = STATE.tasks.filter(t => t.due_date && t.due_date.startsWith(dateISO) && !['BACKLOG','CANCELED'].includes(t.status));
         
