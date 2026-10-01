@@ -1,6 +1,7 @@
 const API_BASE = '/api';
 const STATE = {
     tasks: [],
+    trash: [],
     view: 'dashboard',
     filterDay: null, // 0-6 (Mon-Sun)
     search: '',
@@ -108,9 +109,9 @@ async function init() {
         const t = STATE.deletedTaskBuffer;
         hideToast();
         try {
-            const { id, created_at, subtasks, attachments, ...payload } = t;
-            await api('/tasks', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+            await api(`/tasks/${t.id}/restore`, { method: 'POST' });
             await fetchTasks();
+            if(STATE.view === 'settings') fetchTrash();
         } catch(e) {}
     });
 
@@ -132,7 +133,9 @@ function setView(v) {
     viewDash.classList.toggle('hidden', v !== 'dashboard');
     viewCal.classList.toggle('hidden', v !== 'calendar');
     viewSet.classList.toggle('hidden', v !== 'settings');
+    if(v === 'dashboard') renderDash();
     if(v === 'calendar') renderCalendar();
+    if(v === 'settings') fetchTrash();
 }
 
 function getDayIndex(dateStr) {
@@ -143,8 +146,8 @@ function getDayIndex(dateStr) {
 }
 
 function render() {
-    if (STATE.view === 'dashboard') renderDash();
-    if (STATE.view === 'calendar') renderCalendar();
+    renderDash();
+    renderCalendar();
 }
 
 function renderDash() {
@@ -419,6 +422,7 @@ async function delTask(e, id) {
     
     try {
         await api(`/tasks/${id}`, { method: 'DELETE' });
+        if(STATE.view === 'settings') fetchTrash();
     } catch(err) {
         await fetchTasks();
     }
@@ -641,17 +645,93 @@ document.getElementById('btn-clear-done').onclick = async () => {
     try {
         await api('/tasks?status=DONE', { method: 'DELETE' });
         await fetchTasks();
+        if(STATE.view === 'settings') fetchTrash();
     } catch(e) {}
 };
 
 document.getElementById('btn-reset-data').onclick = async () => {
     try {
+        await api('/trash', { method: 'DELETE' });
         await api('/tasks?status=BACKLOG', { method: 'DELETE' });
         await api('/tasks?status=TODO', { method: 'DELETE' });
         await api('/tasks?status=IN_PROGRESS', { method: 'DELETE' });
         await api('/tasks?status=DONE', { method: 'DELETE' });
         await api('/seed', { method: 'POST' });
         await fetchTasks();
+        if(STATE.view === 'settings') fetchTrash();
+    } catch(e) {}
+};
+
+async function fetchTrash() {
+    STATE.trash = await api('/trash');
+    renderTrash();
+}
+
+function renderTrash() {
+    const list = document.getElementById('trash-list');
+    if (!STATE.trash || STATE.trash.length === 0) {
+        list.innerHTML = '<div class="py-4 text-center text-[13px] text-muted">Trash is empty</div>';
+        return;
+    }
+    list.innerHTML = STATE.trash.map(t => {
+        const delDate = new Date(t.deleted_at).toLocaleDateString('en-US', {month:'short', day:'numeric'});
+        return `
+            <div class="flex items-center justify-between gap-3 py-2.5 border-b border-[#F3EEF0] last:border-0">
+                <div class="flex-1 min-w-0">
+                    <div class="text-[13px] font-semibold text-primary truncate">${escapeHtml(t.title)}</div>
+                    <div class="text-[11px] text-muted">${t.project || 'Inbox'} • Deleted ${delDate}</div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button onclick="restoreTrashTask(${t.id})" class="h-7 px-3 rounded-full bg-[#EFE3E3] text-primary text-[12px] font-semibold hover:bg-[#FFDAB3]">Restore</button>
+                    <div class="relative">
+                        <button onclick="showDeleteConfirm(${t.id})" id="btn-del-${t.id}" class="h-7 px-3 rounded-full bg-[#F1EBED] text-red-600 text-[12px] font-semibold hover:bg-gray-200">Delete</button>
+                        <div id="conf-del-${t.id}" class="hidden absolute right-0 top-0 items-center gap-1 bg-white p-1 rounded-full shadow-md z-10 border border-gray-100 whitespace-nowrap">
+                            <button onclick="permDelete(${t.id})" class="h-6 px-2.5 rounded-full bg-red-600 text-white text-[11px] font-bold hover:bg-red-700">Delete</button>
+                            <button onclick="hideDeleteConfirm(${t.id})" class="h-6 px-2.5 rounded-full bg-gray-200 text-primary text-[11px] font-bold">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+function showDeleteConfirm(id) {
+    document.getElementById(`btn-del-${id}`).classList.add('hidden');
+    document.getElementById(`conf-del-${id}`).classList.replace('hidden', 'flex');
+}
+function hideDeleteConfirm(id) {
+    document.getElementById(`conf-del-${id}`).classList.replace('flex', 'hidden');
+    document.getElementById(`btn-del-${id}`).classList.remove('hidden');
+}
+async function restoreTrashTask(id) {
+    try {
+        await api(`/tasks/${id}/restore`, { method: 'POST' });
+        await fetchTrash();
+        await fetchTasks();
+    } catch(e) {}
+}
+async function permDelete(id) {
+    try {
+        await api(`/tasks/${id}/permanent`, { method: 'DELETE' });
+        await fetchTrash();
+    } catch(e) {}
+}
+
+document.getElementById('btn-empty-trash').onclick = () => {
+    if(!STATE.trash || STATE.trash.length === 0) return;
+    document.getElementById('btn-empty-trash').classList.add('hidden');
+    document.getElementById('empty-trash-confirm').classList.replace('hidden', 'flex');
+};
+document.getElementById('btn-empty-trash-no').onclick = () => {
+    document.getElementById('empty-trash-confirm').classList.replace('flex', 'hidden');
+    document.getElementById('btn-empty-trash').classList.remove('hidden');
+};
+document.getElementById('btn-empty-trash-yes').onclick = async () => {
+    document.getElementById('empty-trash-confirm').classList.replace('flex', 'hidden');
+    document.getElementById('btn-empty-trash').classList.remove('hidden');
+    try {
+        await api('/trash', { method: 'DELETE' });
+        await fetchTrash();
     } catch(e) {}
 };
 

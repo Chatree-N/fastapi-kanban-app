@@ -16,6 +16,7 @@ class Task(Base):
     project = Column(String, default="Inbox")
     progress = Column(Integer, default=0)
     created_at = Column(DateTime, default=lambda: datetime.datetime.now(timezone.utc))
+    deleted_at = Column(DateTime, nullable=True, default=None)
 
     subtasks = relationship("Subtask", back_populates="task", cascade="all, delete-orphan")
     attachments = relationship("Attachment", back_populates="task", cascade="all, delete-orphan")

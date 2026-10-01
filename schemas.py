@@ -75,6 +75,7 @@ class TaskPatch(BaseModel):
 class TaskResponse(TaskBase):
     id: int
     created_at: datetime
+    deleted_at: Optional[datetime] = None
     subtasks: List[SubtaskResponse] = []
     attachments: List[AttachmentResponse] = []
 

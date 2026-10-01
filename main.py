@@ -6,12 +6,33 @@ from sqlalchemy.orm import Session
 from typing import Optional
 import models
 import schemas
-from database import engine, get_db
+from database import engine, get_db, SessionLocal
+from sqlalchemy import inspect, text
+import datetime
+from datetime import timezone
 
 # Create database tables
 models.Base.metadata.create_all(bind=engine)
 
+# Add deleted_at column if missing
+inspector = inspect(engine)
+if "tasks" in inspector.get_table_names():
+    columns = [col['name'] for col in inspector.get_columns('tasks')]
+    if 'deleted_at' not in columns:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN deleted_at DATETIME"))
+
 app = FastAPI(title="Kanban To-Do List API")
+
+@app.on_event("startup")
+def cleanup_trash():
+    db = SessionLocal()
+    try:
+        thirty_days_ago = datetime.datetime.now(timezone.utc) - datetime.timedelta(days=30)
+        db.query(models.Task).filter(models.Task.deleted_at < thirty_days_ago).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
 
 # Allow all origins during local development
 app.add_middleware(
@@ -29,7 +50,11 @@ def read_index():
 
 @app.get("/api/tasks", response_model=list[schemas.TaskResponse])
 def get_tasks(db: Session = Depends(get_db)):
-    return db.query(models.Task).all()
+    return db.query(models.Task).filter(models.Task.deleted_at.is_(None)).all()
+
+@app.get("/api/trash", response_model=list[schemas.TaskResponse])
+def get_trash(db: Session = Depends(get_db)):
+    return db.query(models.Task).filter(models.Task.deleted_at.is_not(None)).order_by(models.Task.deleted_at.desc()).all()
 
 @app.post("/api/tasks", response_model=schemas.TaskResponse)
 def create_task(task: schemas.TaskCreate, db: Session = Depends(get_db)):
@@ -41,7 +66,7 @@ def create_task(task: schemas.TaskCreate, db: Session = Depends(get_db)):
 
 @app.put("/api/tasks/{task_id}", response_model=schemas.TaskResponse)
 def update_task(task_id: int, task: schemas.TaskUpdate, db: Session = Depends(get_db)):
-    db_task = db.query(models.Task).filter(models.Task.id == task_id).first()
+    db_task = db.query(models.Task).filter(models.Task.id == task_id, models.Task.deleted_at.is_(None)).first()
     if db_task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     
@@ -54,7 +79,7 @@ def update_task(task_id: int, task: schemas.TaskUpdate, db: Session = Depends(ge
 
 @app.patch("/api/tasks/{task_id}", response_model=schemas.TaskResponse)
 def patch_task(task_id: int, task: schemas.TaskPatch, db: Session = Depends(get_db)):
-    db_task = db.query(models.Task).filter(models.Task.id == task_id).first()
+    db_task = db.query(models.Task).filter(models.Task.id == task_id, models.Task.deleted_at.is_(None)).first()
     if db_task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     
@@ -66,32 +91,60 @@ def patch_task(task_id: int, task: schemas.TaskPatch, db: Session = Depends(get_
     db.refresh(db_task)
     return db_task
 
-@app.delete("/api/tasks/{task_id}")
+@app.delete("/api/tasks/{task_id}", response_model=schemas.TaskResponse)
 def delete_task(task_id: int, db: Session = Depends(get_db)):
-    db_task = db.query(models.Task).filter(models.Task.id == task_id).first()
+    db_task = db.query(models.Task).filter(models.Task.id == task_id, models.Task.deleted_at.is_(None)).first()
     if db_task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     
-    db.delete(db_task)
+    db_task.deleted_at = datetime.datetime.now(timezone.utc)
     db.commit()
-    return {"message": "Task deleted successfully"}
+    db.refresh(db_task)
+    return db_task
 
 @app.delete("/api/tasks")
 def delete_tasks_by_status(status: Optional[str] = Query(None), db: Session = Depends(get_db)):
     if status:
-        tasks = db.query(models.Task).filter(models.Task.status == status).all()
+        tasks = db.query(models.Task).filter(models.Task.status == status, models.Task.deleted_at.is_(None)).all()
         for task in tasks:
-            db.delete(task)
+            task.deleted_at = datetime.datetime.now(timezone.utc)
         db.commit()
         return {"message": f"Tasks with status {status} deleted"}
     return {"message": "No status provided"}
 
+@app.post("/api/tasks/{task_id}/restore", response_model=schemas.TaskResponse)
+def restore_task(task_id: int, db: Session = Depends(get_db)):
+    db_task = db.query(models.Task).filter(models.Task.id == task_id, models.Task.deleted_at.is_not(None)).first()
+    if db_task is None:
+        raise HTTPException(status_code=404, detail="Task not found in trash")
+    
+    db_task.deleted_at = None
+    db.commit()
+    db.refresh(db_task)
+    return db_task
+
+@app.delete("/api/tasks/{task_id}/permanent")
+def delete_task_permanent(task_id: int, db: Session = Depends(get_db)):
+    db_task = db.query(models.Task).filter(models.Task.id == task_id, models.Task.deleted_at.is_not(None)).first()
+    if db_task is None:
+        raise HTTPException(status_code=404, detail="Task not found in trash")
+    
+    db.delete(db_task)
+    db.commit()
+    return {"message": "Task permanently deleted"}
+
+@app.delete("/api/trash")
+def empty_trash(db: Session = Depends(get_db)):
+    db.query(models.Task).filter(models.Task.deleted_at.is_not(None)).delete(synchronize_session=False)
+    db.commit()
+    return {"message": "Trash emptied"}
+
 # Subtasks endpoints
 @app.post("/api/tasks/{task_id}/subtasks", response_model=schemas.SubtaskResponse)
 def create_subtask(task_id: int, subtask: schemas.SubtaskCreate, db: Session = Depends(get_db)):
-    db_task = db.query(models.Task).filter(models.Task.id == task_id).first()
+    db_task = db.query(models.Task).filter(models.Task.id == task_id, models.Task.deleted_at.is_(None)).first()
     if db_task is None:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(status_code=404, detail="Task not found or is in trash")
     
     db_subtask = models.Subtask(**subtask.model_dump(), task_id=task_id)
     db.add(db_subtask)
@@ -126,9 +179,9 @@ def delete_subtask(subtask_id: int, db: Session = Depends(get_db)):
 # Attachments endpoints
 @app.post("/api/tasks/{task_id}/attachments", response_model=schemas.AttachmentResponse)
 def create_attachment(task_id: int, attachment: schemas.AttachmentCreate, db: Session = Depends(get_db)):
-    db_task = db.query(models.Task).filter(models.Task.id == task_id).first()
+    db_task = db.query(models.Task).filter(models.Task.id == task_id, models.Task.deleted_at.is_(None)).first()
     if db_task is None:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(status_code=404, detail="Task not found or is in trash")
     
     db_attachment = models.Attachment(**attachment.model_dump(), task_id=task_id)
     db.add(db_attachment)
